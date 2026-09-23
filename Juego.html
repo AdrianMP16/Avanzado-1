@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Catch the Food</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      touch-action: none;
+      user-select: none;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: #1e1e24;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    #game-container {
+      position: relative;
+      width: 100vw;
+      max-width: 420px;
+      height: 80vh;
+      max-height: 700px;
+      background: #2b2d42;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      cursor: pointer;
+    }
+
+    /* Top HUD */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 1.1rem;
+      font-weight: bold;
+      background: rgba(0, 0, 0, 0.3);
+      z-index: 5;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Start / GameOver Screen */
+    .overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .overlay h1 { margin-bottom: 10px; font-size: 2rem; color: #ffd166; }
+    .overlay p { font-size: 1.1rem; margin-bottom: 25px; color: #edf2f4; }
+
+    .btn {
+      background: #ef233c;
+      color: white;
+      border: none;
+      padding: 15px 35px;
+      font-size: 1.2rem;
+      font-weight: bold;
+      border-radius: 30px;
+      cursor: pointer;
+      box-shadow: 0 4px 15px rgba(239, 35, 60, 0.4);
+      transition: transform 0.1s, background 0.2s;
+    }
+
+    .btn:active {
+      transform: scale(0.95);
+      background: #d90429;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <div id="game-container">
+    <!-- Game Stats -->
+    <div id="hud">
+      <div>⏱️ Time: <span id="time-display">30</span>s</div>
+      <div>⭐ Score: <span id="score-display">0</span></div>
+    </div>
+
+    <!-- Start / GameOver Screen -->
+    <div id="start-overlay" class="overlay">
+      <h1 id="title-text">Catch the Food!</h1>
+      <p id="info-text">Catch food for +10 pts. Avoid bombs 💣 (-15 pts)! You have 30 seconds.</p>
+      <button id="start-btn" class="btn">START GAME</button>
+    </div>
+
+    <!-- Game Canvas -->
+    <canvas id="gameCanvas"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const scoreDisplay = document.getElementById("score-display");
+    const timeDisplay = document.getElementById("time-display");
+    const startOverlay = document.getElementById("start-overlay");
+    const startBtn = document.getElementById("start-btn");
+    const titleText = document.getElementById("title-text");
+    const infoText = document.getElementById("info-text");
+
+    // Internal canvas sizing
+    const container = document.getElementById("game-container");
+    canvas.width = container.clientWidth;
+    canvas.height = container.clientHeight;
+
+    // Game Config
+    const GAME_DURATION = 30; // seconds
+    let score = 0;
+    let timeLeft = GAME_DURATION;
+    let isPlaying = false;
+    let timerInterval = null;
+    let baseSpeed = 3.5;
+
+    // Emojis
+    const FOOD_ITEMS = ["🍎", "🍌", "🍓", "🍇", "🥑", "🍕", "🍔", "🍉", "🍍", "🍩"];
+    const BOMB_EMOJI = "💣";
+
+    // Player Basket
+    const player = {
+      width: 80,
+      height: 20,
+      x: canvas.width / 2 - 40,
+      y: canvas.height - 40,
+      color: '#4cc9f0'
+    };
+
+    // Falling Item Object
+    const fallingItem = {
+      x: 0,
+      y: 0,
+      size: 34,
+      speed: 3,
+      emoji: "🍎",
+      isBomb: false
+    };
+
+    // Actualiza la posición de la cesta
+    function updatePlayerPosition(clientX) {
+      if (!isPlaying) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+
+      player.x = x - player.width / 2;
+
+      // Screen boundaries
+      if (player.x < 0) player.x = 0;
+      if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+    }
+
+    // Eventos táctiles (Móvil)
+    function handleTouch(e) {
+      updatePlayerPosition(e.touches[0].clientX);
+    }
+
+    // Eventos de mouse (PC)
+    function handleMouse(e) {
+      updatePlayerPosition(e.clientX);
+    }
+
+    // Controles para pantalla táctil
+    canvas.addEventListener("touchstart", handleTouch);
+    canvas.addEventListener("touchmove", handleTouch);
+
+    // Controles para Mouse en PC (movimiento y clic/arrastre)
+    canvas.addEventListener("mousemove", handleMouse);
+    canvas.addEventListener("mousedown", handleMouse);
+
+    // Spawn new item (25% chance of being a bomb)
+    function spawnItem() {
+      fallingItem.x = Math.random() * (canvas.width - fallingItem.size) + 10;
+      fallingItem.y = -fallingItem.size;
+      fallingItem.speed = baseSpeed + Math.random() * 2;
+
+      // 25% chance to spawn a bomb
+      fallingItem.isBomb = Math.random() < 0.25;
+
+      if (fallingItem.isBomb) {
+        fallingItem.emoji = BOMB_EMOJI;
+      } else {
+        fallingItem.emoji = FOOD_ITEMS[Math.floor(Math.random() * FOOD_ITEMS.length)];
+      }
+    }
+
+    // Update positions & collisions
+    function update() {
+      fallingItem.y += fallingItem.speed;
+
+      // Collision Detection
+      if (
+        fallingItem.y + fallingItem.size / 2 >= player.y &&
+        fallingItem.y - fallingItem.size / 2 <= player.y + player.height &&
+        fallingItem.x + fallingItem.size / 2 >= player.x &&
+        fallingItem.x - fallingItem.size / 2 <= player.x + player.width
+      ) {
+        if (fallingItem.isBomb) {
+          // Subtract points for bomb, minimum score is 0
+          score = Math.max(0, score - 15);
+        } else {
+          // Add points for food
+          score += 10;
+        }
+
+        scoreDisplay.textContent = score;
+        spawnItem();
+      }
+
+      // Missed item (hits bottom)
+      if (fallingItem.y - fallingItem.size > canvas.height) {
+        spawnItem();
+      }
+    }
+
+    // Render elements
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Draw Player Basket
+      ctx.fillStyle = player.color;
+      ctx.beginPath();
+      ctx.roundRect(player.x, player.y, player.width, player.height, 10);
+      ctx.fill();
+
+      // Draw Emoji
+      ctx.font = `${fallingItem.size}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(fallingItem.emoji, fallingItem.x, fallingItem.y);
+    }
+
+    // Main Loop
+    function gameLoop() {
+      if (!isPlaying) return;
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Start Game
+    function startGame() {
+      score = 0;
+      timeLeft = GAME_DURATION;
+      baseSpeed = 3.5;
+      scoreDisplay.textContent = score;
+      timeDisplay.textContent = timeLeft;
+      isPlaying = true;
+
+      player.x = canvas.width / 2 - player.width / 2;
+      spawnItem();
+
+      startOverlay.classList.add("hidden");
+
+      // 1-Second Timer & Speed Ramp-up
+      timerInterval = setInterval(() => {
+        timeLeft--;
+        timeDisplay.textContent = timeLeft;
+
+        // Progressive speed increase
+        baseSpeed += 0.25;
+
+        if (timeLeft <= 0) {
+          endGame();
+        }
+      }, 1000);
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // End Game
+    function endGame() {
+      isPlaying = false;
+      clearInterval(timerInterval);
+
+      titleText.textContent = "Time's Up! ⌛";
+      infoText.innerHTML = `Final Score: <strong>${score} points</strong>`;
+      startBtn.textContent = "PLAY AGAIN";
+      startOverlay.classList.remove("hidden");
+    }
+
+    startBtn.addEventListener("click", startGame);
+  </script>
+</body>
+</html>
